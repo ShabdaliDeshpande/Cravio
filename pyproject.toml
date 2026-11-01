@@ -1,0 +1,22 @@
+[project]
+name = "cravio"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "chainlit>=2.12.0",
+    "deepagents>=0.7.32",
+    "langchain-mcp-adapters>=0.3.2",
+    "langchain-ollama>=1.1.0",
+    "langgraph-checkpoint-sqlite>=3.1.2",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+cravio = "cravio.cli:main"
+cravio-swiggy-tools = "cravio.swiggy.inspect_tools:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"

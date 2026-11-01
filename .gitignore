@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets: API keys and the Swiggy OAuth token (it can act on your Swiggy account)
+.env
+.cravio/
+
+# Chainlit: files uploaded in the web chat
+.files/
