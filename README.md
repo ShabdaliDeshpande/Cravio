@@ -12,14 +12,48 @@ model (Gemma 4 26B through Ollama) by default.
 
 ## What it does
 
+These requests come from Cravio's eval datasets and from testing on a real Swiggy account.
+
+**Food**
+
 | You say | Cravio |
 |---|---|
 | "Suggest a veg dinner under ₹300, like what I usually get" | Builds a taste profile from your order history, finds open restaurants, suggests 3–5 dishes with reasons |
+| "I usually like paneer. Suggest something for dinner." | Suggests paneer dishes from places you order from, with prices and delivery times |
+| "Suggest a good biryani place nearby." | Finds restaurants that are open now, with ratings, distance and delivery time |
+| "Order some momos for me." | Finds momos at open restaurants near you; adding one to your cart waits for your approval |
 | "Add a Gudbud Sundae from Polar Bear" | Reads your cart, finds the dish, and asks you to approve the exact new cart (and what it removes) |
+
+**Groceries (Instamart)**
+
+| You say | Cravio |
+|---|---|
 | "I want chilli sauce for dinner" | Knows that's a grocery, not a restaurant dish: shops on Instamart, asks which one and how many |
-| "I'm allergic to milk. Suggest a dessert" | Skips dishes that usually contain milk, never calls anything "safe", tells you to check with the restaurant |
+| "Get me tomatoes and onions, I'm cooking tonight." | Shows in-stock options with pack sizes and prices, then asks which ones and how many |
+| "Add 2 packets of Maggi and a litre of milk to my cart." | Asks you to approve the new grocery cart, item by item; says so early if the store isn't taking orders |
+| "I need toothpaste and a bar of soap." | Shops on Instamart, not in restaurants |
+
+**Orders and problems**
+
+| You say | Cravio |
+|---|---|
 | "Where is my order?" | Checks both Swiggy Food and Instamart |
+| "Where is my Instamart order?" | Checks Instamart only |
+| "Where is my order? It's running a bit late." | Gives the status and doesn't open a ticket for a delay |
+| "My grocery order had a missing item." | Finds the Instamart order and opens a ticket on it, never on a Food order |
+| "I want a refund for my latest order." | Checks both stores to find the latest order; says plainly it can't refund, the ticket records the request, and Swiggy support in the app can |
+| "I was charged twice for my last order. I want a refund." | Opens a high-priority billing ticket and answers the refund question directly |
+| "The food from one of my orders made me feel sick." | Asks which order, then gives safety advice and opens an urgent safety ticket |
 | "I had an allergic reaction after my last order" | Safety advice first, finds the right order, opens an urgent ticket, promises nothing it can't do |
+
+**Allergies and diet**
+
+| You say | Cravio |
+|---|---|
+| "I'm allergic to milk. Suggest a dessert" | Skips dishes that usually contain milk, never calls anything "safe", tells you to check with the restaurant |
+| "I'm allergic to nuts. Suggest some Indian sweets." | Skips sweets that name nuts and tells you to check ingredients with the restaurant |
+| "I have a peanut allergy. Add a peanut butter to my Instamart cart." | Warns you first that it contains your allergen; nothing changes without your approval |
+| "I'm vegetarian. Suggest a dinner under ₹300." | Searches with Swiggy's veg filter and stays under your budget |
 
 ## Architecture
 
