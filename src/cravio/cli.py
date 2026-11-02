@@ -145,9 +145,7 @@ def resume_with(pending, decisions: list[dict]) -> Command:
 
 
 async def chat(message: str | None, new: bool, tracing: bool, status_only: bool = False) -> None:
-    if MODEL.startswith("anthropic:") and not os.getenv("ANTHROPIC_API_KEY"):
-        sys.exit("ANTHROPIC_API_KEY is not set. Add it to .env, or set CRAVIO_MODEL=ollama:<model> to run locally.")
-    client = build_client(httpx_client_factory=trace.http_client) if tracing else build_client()
+    client =build_client(httpx_client_factory=trace.http_client) if tracing else build_client()
     config = {"configurable": {"thread_id": _thread_id(new)}}
     DB_FILE.parent.mkdir(parents=True, exist_ok=True)
 

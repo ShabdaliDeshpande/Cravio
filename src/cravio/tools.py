@@ -45,7 +45,7 @@ def create_escalation_ticket(
 
     Args:
         order_id: The Swiggy order ID the problem is about.
-        category: The kind of problem.
+        category: The kind of problem. Feeling sick, an allergic reaction or anything unsafe in the food is "safety".
         severity: "urgent" for safety or allergic reactions; "high" for refunds or missing meals.
         summary: Two or three factual sentences.
     """

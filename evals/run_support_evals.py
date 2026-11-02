@@ -77,7 +77,8 @@ async def run_example(tools, inputs: dict) -> dict:
     asked_before_ticket = False
     for text in inputs["turns"]:
         reply = await asyncio.wait_for(send(text), TURN_TIMEOUT)
-    if inputs.get("follow_up") and not tickets() and "?" in reply:  # Cravio asked something first
+    # No ticket yet: Cravio asked something first ("which order was it?", not always with a "?"), so answer once.
+    if inputs.get("follow_up") and not tickets():
         asked_before_ticket = True
         reply = await asyncio.wait_for(send(inputs["follow_up"]), TURN_TIMEOUT)
     order_lists = "\n".join(text for name, text in swiggy_said if name == "get_food_orders")
