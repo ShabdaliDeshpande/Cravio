@@ -61,7 +61,7 @@ copy .env.example .env        # then fill in what you need (see the comments in 
 ollama pull gemma4:26b
 ```
 
-Main settings in `.env`: `SWIGGY_SERVERS=food,im` (Instamart on), `CRAVIO_LANGSMITH=true` and
+Main settings in `.env`: `SWIGGY_SERVERS=food,im` (Food and Instamart, the default; `food` alone turns Instamart off), `CRAVIO_LANGSMITH=true` and
 `LANGSMITH_API_KEY` (tracing), `OLLAMA_THINK` (thinking makes tool use much more reliable; keep it on).
 
 The first run opens your browser to sign in to Swiggy (phone + OTP). The token is kept in `.cravio/`, which is

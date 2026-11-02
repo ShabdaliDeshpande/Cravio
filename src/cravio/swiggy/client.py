@@ -54,7 +54,7 @@ def needs_approval(tool_name: str) -> bool:
 
 
 def enabled_servers() -> list[str]:
-    names = [s.strip() for s in os.getenv("SWIGGY_SERVERS", "food").split(",") if s.strip()]
+    names = [s.strip() for s in os.getenv("SWIGGY_SERVERS", "food,im").split(",") if s.strip()]
     unknown = set(names) - SERVERS.keys()
     if unknown:
         raise ValueError(f"Unknown SWIGGY_SERVERS {sorted(unknown)}; choose from {sorted(SERVERS)}")
