@@ -4,6 +4,7 @@
   uv run python evals/watch_carts.py --hours 72   look further back
   uv run python evals/watch_carts.py --loop 10    keep watching: check again every 10 minutes (Ctrl+C stops)
   uv run python evals/watch_carts.py --dry-run    print the scores only; write nothing to LangSmith
+  uv run python evals/watch_carts.py --rescore    score turns again (after a watcher fix), replacing old scores
 
 Live cases (open restaurants, stock, your real cart) can't be a fixed dataset, so this reads the traces of
 your real conversations in project cravio instead. It only reads them (already masked) and never calls
@@ -12,6 +13,7 @@ goes to the annotation queue cravio-watch for you to review.
   watch_approved          the change ran only after you approved it
   watch_read_cart_first   Cravio read the cart in this turn before changing it
   watch_kept_items        everything already in the cart is in what Cravio sent, unless you asked to remove it
+                          or it was a switch to another restaurant (a Food cart holds one restaurant)
   watch_cart_matches      Swiggy's cart afterwards has exactly what Cravio sent (catches Swiggy undoing a change)
   watch_honest_reply      the reply says "added" or "updated" only if the change really happened
   watch_change_stuck      the cart still held what the change left, the last time it was read before the next
@@ -32,13 +34,14 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from langsmith import Client  # noqa: E402
-from langsmith.utils import LangSmithRateLimitError  # noqa: E402
+from langsmith.utils import LangSmithNotFoundError, LangSmithRateLimitError  # noqa: E402
 
 from cravio.availability import STORE_CLOSED  # noqa: E402
 
 PROJECT = os.getenv("LANGSMITH_PROJECT", "cravio")
 QUEUE = "cravio-watch"
 CHANGES = ["update_food_cart", "update_cart", "flush_food_cart"]
+CHECKS = ["watch_approved", "watch_read_cart_first", "watch_kept_items", "watch_cart_matches", "watch_honest_reply"]
 CART_READS = {"get_food_cart", "get_cart"}
 STORE = {"update_food_cart": "food", "flush_food_cart": "food", "get_food_cart": "food", "update_cart": "im", "get_cart": "im"}
 SETTLED = timedelta(minutes=5)  # Swiggy has brought old carts back 0.5 to 3 minutes after a change
@@ -121,8 +124,8 @@ def _agent_run(client: Client, tool_run, root):
     return next((r for r in subagents if str(r.id) in (tool_run.dotted_order or "")), root)
 
 
-def check_change(client: Client, tool_run, root) -> dict[str, tuple[int | None, str]]:
-    """Score one cart change. A score of None means the check doesn't apply."""
+def check_change(client: Client, tool_run, root, places: dict[str, str]) -> dict[str, tuple[int | None, str]]:
+    """Score one cart change. A score of None means the check doesn't apply. places: menu item ID -> restaurant ID."""
     agent = _agent_run(client, tool_run, root)
     messages = (agent.outputs or {}).get("messages", [])
     result = (tool_run.outputs or {}).get("output") or {}
@@ -174,7 +177,15 @@ def check_change(client: Client, tool_run, root) -> dict[str, tuple[int | None, 
             scores["watch_kept_items"] = (None, "no cart read, or the user asked to remove something")
         else:
             missing = sorted(set(before) - set(sent))
-            scores["watch_kept_items"] = (int(not missing), f"{tool}: dropped {missing}" if missing else f"{tool}: kept all")
+            # A Food cart holds one restaurant, so a dish from another one replaces it all (Cravio's approval shows
+            # what goes). Swiggy's cart doesn't name its restaurant, so go by the restaurant each item was added from.
+            target = str((tool_run.inputs or {}).get("restaurantId", ""))
+            old_places = {places[i] for i in before if i in places}
+            if tool == "update_food_cart" and missing and not set(before) & set(sent) and old_places and target not in old_places:
+                scores["watch_kept_items"] = (1, f"{tool}: switched restaurant, so the old items went: {missing}")
+            else:
+                unknown = " (Cravio didn't add it in the past week, so its restaurant is unknown)" if missing and not old_places else ""
+                scores["watch_kept_items"] = (int(not missing), f"{tool}: dropped {missing}{unknown}" if missing else f"{tool}: kept all")
 
     after = None if result.get("status") == "error" else cart_items(result)
     if result.get("status") == "error" and STORE_CLOSED.search(_text(result.get("content"))):
@@ -249,7 +260,7 @@ def _queue(client: Client):
     return client.create_annotation_queue(name=QUEUE, description="Cart changes that failed a watcher check (evals/watch_carts.py)")
 
 
-def watch_once(client: Client, hours: float, dry_run: bool = False) -> None:
+def watch_once(client: Client, hours: float, dry_run: bool = False, rescore: bool = False) -> None:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     names = ", ".join(f'"{n}"' for n in CHANGES)
     changes = _patiently(lambda: list(client.list_runs(project_name=PROJECT, run_type="tool",
@@ -257,16 +268,22 @@ def watch_once(client: Client, hours: float, dry_run: bool = False) -> None:
     by_turn: dict = {}
     for run in changes:
         by_turn.setdefault(run.trace_id, []).append(run)
+    # Which restaurant each dish was added from, by Cravio's own cart changes over the past week.
+    food_changes = _patiently(lambda: list(client.list_runs(project_name=PROJECT, run_type="tool", filter='eq(name, "update_food_cart")',
+                                                            start_time=since - timedelta(days=7))))
+    places = {str(i.get("menu_item_id")): str((r.inputs or {}).get("restaurantId"))
+              for r in sorted(food_changes, key=lambda r: r.start_time) for i in (r.inputs or {}).get("cartItems") or []}
 
     new = failed = 0
     for trace_id, runs in by_turn.items():
-        scored_before = _patiently(lambda: list(client.list_feedback(run_ids=[trace_id], feedback_key=["watch_approved"])))
-        if scored_before:
+        earlier = {f.key: f for f in _patiently(lambda: list(client.list_feedback(
+            run_ids=[trace_id], feedback_key=[*CHECKS, "watch_change_stuck"])))}
+        if "watch_approved" in earlier and not rescore:
             continue  # scored on an earlier pass
         root = _patiently(lambda: client.read_run(trace_id))
         combined: dict[str, list[tuple[int | None, str]]] = {}
         for run in sorted(runs, key=lambda r: r.start_time):
-            for key, value in check_change(client, run, root).items():
+            for key, value in check_change(client, run, root, places).items():
                 combined.setdefault(key, []).append(value)
         failures = []
         for key, values in combined.items():
@@ -276,6 +293,8 @@ def watch_once(client: Client, hours: float, dry_run: bool = False) -> None:
                 score = min(scored)  # one bad change in the turn fails the turn
                 if dry_run:
                     print(f"      {key} = {score}  ({comment})")
+                elif key in earlier:  # --rescore: replace the old score rather than add a second one
+                    _patiently(lambda: client.update_feedback(earlier[key].id, score=score, comment=comment))
                 else:
                     _patiently(lambda: client.create_feedback(trace_id, key, score=score, comment=comment,
                                                               source_info={"watcher": "evals/watch_carts.py"}))
@@ -286,8 +305,16 @@ def watch_once(client: Client, hours: float, dry_run: bool = False) -> None:
               f"{'FAIL ' + ', '.join(failures) if failures else 'all checks pass'}")
         if failures:
             failed += 1
-            if not dry_run:
-                _patiently(lambda: client.add_runs_to_annotation_queue(_queue(client).id, run_ids=[trace_id]))
+        if dry_run:
+            continue
+        was_in_queue = any(f.score == 0 for f in earlier.values())
+        if failures and not was_in_queue:
+            _patiently(lambda: client.add_runs_to_annotation_queue(_queue(client).id, run_ids=[trace_id]))
+        elif was_in_queue and not failures and getattr(earlier.get("watch_change_stuck"), "score", None) != 0:
+            try:  # --rescore found it passes now: take it off the review queue
+                _patiently(lambda: client.delete_run_from_annotation_queue(_queue(client).id, run_id=trace_id))
+            except LangSmithNotFoundError:
+                pass  # already reviewed and removed
     print(f"{len(changes)} cart changes in the last {hours:g}h; {new} turns newly scored, {failed} sent to {QUEUE}")
     stuck, undone = watch_stuck(client, since, changes, dry_run)
     print(f"did the change stick: {stuck} changes judged now, {undone} undone afterwards")
@@ -298,10 +325,11 @@ def main() -> None:
     parser.add_argument("--hours", type=float, default=24, help="how far back to look")
     parser.add_argument("--loop", type=float, metavar="MINUTES", help="keep watching, checking every MINUTES")
     parser.add_argument("--dry-run", action="store_true", help="print the scores; write nothing to LangSmith")
+    parser.add_argument("--rescore", action="store_true", help="score turns again, replacing the watcher's old scores")
     args = parser.parse_args()
     client = Client()
     while True:
-        watch_once(client, args.hours, args.dry_run)
+        watch_once(client, args.hours, args.dry_run, args.rescore)
         if not args.loop:
             return
         time.sleep(args.loop * 60)
