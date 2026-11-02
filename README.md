@@ -55,6 +55,13 @@ These requests come from Cravio's eval datasets and from testing on a real Swigg
 | "I have a peanut allergy. Add a peanut butter to my Instamart cart." | Warns you first that it contains your allergen; nothing changes without your approval |
 | "I'm vegetarian. Suggest a dinner under ₹300." | Searches with Swiggy's veg filter and stays under your budget |
 
+**Multi-step requests (still being tuned)**
+
+| You say | Cravio |
+|---|---|
+| "Compare brands and prices for my monthly staples: tea (Tata, Brooke Bond, Red Label), cooking oil (Fortune, Sundrop), milk (Amul, Mother Dairy, Nandini). Help me pick the best value. Deliver to home." | Searches each brand on Instamart, compares pack sizes and prices, and names a best-value pick for each item; adding them waits for your approval. In our first try it finished oil and milk but not tea, and took about 4 minutes. |
+| "I'm making Thai Green Curry tonight for 4 people. Tell me what I need and add everything to my cart." | Should list the ingredients for 4 (from the model's own knowledge: Cravio has no web search), find each on Instamart, and ask you to approve the cart. Not tested yet. |
+
 ## Architecture
 
 ```
