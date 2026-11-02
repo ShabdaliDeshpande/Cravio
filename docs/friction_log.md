@@ -55,16 +55,20 @@ queue. Two more rough edges along the way:
 - Walking a trace with `read_run`, one parent at a time, hit `429 Too Many Requests` after a few changes. The
   fix was one filtered `list_runs` per trace plus back-off. `list_runs` also warns that it's deprecated in
   favour of `client.runs.query`.
-- In the UI LLM-as-judge, each prompt variable was mapped to the whole `output` by default, so the judge read
-  every field three times and passed replies it should have failed. The model panel had no temperature field,
-  and `{"temperature": 0}` in extra parameters didn't show up in the judge's traces (still 0.7).
+- In the UI LLM-as-judge, three prompt variables (`reply`, `tickets`, `swiggy_said`) each ended up mapped to
+  the whole `output`, not to one field, and nothing flagged it. The judge got every field three times and, with
+  a first prompt that was too lenient, passed replies that made false promises. Mapping each variable to its
+  field and a stricter prompt fixed it.
+- For the Groq model, the judge's model panel showed no temperature field, so I set `{"temperature": 0}` in
+  extra parameters. The judge's traces still showed temperature 0.7, and I couldn't confirm from the UI whether
+  the setting had been applied.
 
 **Why it matters.** For agents, the failures worth catching in production are about sequences: what happened
 before and after a step, and across turns. Per-run evaluators can't express them.
 
 **What would help.** Online evaluators that receive the whole trace tree (and optionally the thread), with
-filters on child runs. A documented pattern for "score later, when more data arrives". Variable mapping that
-points at a field by default.
+filters on child runs. A documented pattern for "score later, when more data arrives". A warning when a judge
+variable is mapped to a whole object, and the judge's effective model settings shown on the evaluator.
 
 ---
 
