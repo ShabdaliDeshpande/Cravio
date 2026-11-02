@@ -1,7 +1,7 @@
 [project]
 name = "cravio"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI food concierge for Swiggy Food & Instamart: chat to order, with approvals, allergy guards and no auto-checkout."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

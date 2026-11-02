@@ -14,6 +14,9 @@ goes to the annotation queue cravio-watch for you to review.
   watch_kept_items        everything already in the cart is in what Cravio sent, unless you asked to remove it
   watch_cart_matches      Swiggy's cart afterwards has exactly what Cravio sent (catches Swiggy undoing a change)
   watch_honest_reply      the reply says "added" or "updated" only if the change really happened
+  watch_change_stuck      the cart still held what the change left, the last time it was read before the next
+                          change: catches Swiggy bringing an old cart back minutes later. Scored once that's
+                          known (a later change, or a read 5+ minutes after), so it can come on a later pass.
 """
 
 import argparse
@@ -29,11 +32,16 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from langsmith import Client  # noqa: E402
+from langsmith.utils import LangSmithRateLimitError  # noqa: E402
+
+from cravio.availability import STORE_CLOSED  # noqa: E402
 
 PROJECT = os.getenv("LANGSMITH_PROJECT", "cravio")
 QUEUE = "cravio-watch"
 CHANGES = ["update_food_cart", "update_cart", "flush_food_cart"]
 CART_READS = {"get_food_cart", "get_cart"}
+STORE = {"update_food_cart": "food", "flush_food_cart": "food", "get_food_cart": "food", "update_cart": "im", "get_cart": "im"}
+SETTLED = timedelta(minutes=5)  # Swiggy has brought old carts back 0.5 to 3 minutes after a change
 WANTS_REMOVAL = re.compile(r"\b(remove|delete|drop|replace|instead|only|clear|empty|flush)\b", re.I)
 _NEGATED = re.compile(r"(not|n't|never)\s+(been\s+)?(added|updated|changed|cleared)")
 _CLAIMED = re.compile(r"\b(added|updated|cleared|emptied)\b")
@@ -50,6 +58,12 @@ def cart_items(message: dict) -> dict[str, int] | None:
     structured = (message.get("artifact") or {}).get("structured_content") or {}
     if isinstance(structured.get("items"), list):  # Instamart sends the cart as data
         return {str(i.get("spinId") or i.get("skuId")): int(i.get("quantity", 0)) for i in structured["items"]}
+    food = structured.get("data") if isinstance(structured.get("data"), dict) else {}
+    if isinstance(food.get("items"), list):  # so does Food: data.items[].menu_item_id and quantity
+        items: dict[str, int] = {}
+        for i in food["items"]:
+            items[str(i.get("menu_item_id"))] = items.get(str(i.get("menu_item_id")), 0) + int(i.get("quantity", 0))
+        return items
     text = _text(message.get("content"))
     items: dict[str, int] = {}
     for line in text.splitlines():  # Food: "  - Chilli Garlic Noodles x5 — ₹1700 each ... (ID: 65684363)"
@@ -88,18 +102,53 @@ def _decisions(value) -> list[dict]:
     return []
 
 
+def _patiently(call):
+    """Run a LangSmith API call, waiting and trying again if LangSmith says we're asking too fast."""
+    for wait in (10, 30, 60):
+        try:
+            return call()
+        except LangSmithRateLimitError:
+            print(f"   (LangSmith says too many requests; waiting {wait}s)")
+            time.sleep(wait)
+    return call()
+
+
+def _agent_run(client: Client, tool_run, root):
+    """The agent that made the change: the instamart subagent, or Cravio itself for the Food cart.
+    One request: the subagent runs in this trace, and an enclosing one appears in the tool run's dotted order."""
+    subagents = _patiently(lambda: list(client.list_runs(project_name=PROJECT, trace_id=tool_run.trace_id,
+                                                         filter='eq(name, "instamart")')))
+    return next((r for r in subagents if str(r.id) in (tool_run.dotted_order or "")), root)
+
+
 def check_change(client: Client, tool_run, root) -> dict[str, tuple[int | None, str]]:
     """Score one cart change. A score of None means the check doesn't apply."""
-    # The agent that made the change: the instamart subagent, or Cravio itself for the Food cart.
-    agent = tool_run
-    while agent.parent_run_id and agent.name != "instamart":
-        agent = client.read_run(agent.parent_run_id)
+    agent = _agent_run(client, tool_run, root)
     messages = (agent.outputs or {}).get("messages", [])
     result = (tool_run.outputs or {}).get("output") or {}
     at = next((i for i, m in enumerate(messages) if m.get("type") == "tool"
                and m.get("tool_call_id") == result.get("tool_call_id")), len(messages))
+    def shows_cart(m: dict) -> bool:  # a cart read (even one Swiggy refused), or its reply to Cravio's own change
+        if m.get("type") != "tool":
+            return False
+        return m.get("name") in CART_READS or (m.get("name") in CHANGES and m.get("status") != "error")
+
     turn_start = max((i for i in range(at) if messages[i].get("type") == "human"), default=0)
-    reads = [m for m in messages[turn_start:at] if m.get("type") == "tool" and m.get("name") in CART_READS]
+    asked_start = max((i for i in range(turn_start) if messages[i].get("type") == "human"), default=0)
+    reads = [m for m in messages[turn_start:at] if shows_cart(m)]
+    read_when = "in this turn"
+    if not reads:  # you said "yes" to "Shall I add it?": what Cravio saw in the turn that asked counts
+        reads = [m for m in messages[asked_start:turn_start] if shows_cart(m)]
+        read_when = "in the turn that asked you to confirm"
+    if not reads:  # Cravio's safety check (availability.py) reads the live cart in code, just before the change
+        checked = _patiently(lambda: list(client.list_runs(project_name=PROJECT, trace_id=tool_run.trace_id, run_type="tool",
+                                                           filter='in(name, ["get_food_cart", "get_cart"])')))
+        reads = [(r.outputs or {}).get("output") or {} for r in sorted(checked, key=lambda r: r.start_time)
+                 if r.start_time <= tool_run.start_time]
+        read_when = "by Cravio's safety check just before the change"
+    # Cravio told you the cart would be replaced (a dish from another restaurant), as its rules ask.
+    announced = any(m.get("type") == "ai" and re.search(r"\breplac", _text(m.get("content")), re.I)
+                    for m in messages[asked_start:at])
 
     root_messages = (root.outputs or {}).get("messages", [])
     user_said = next((_text(m.get("content")) for m in reversed(root_messages) if m.get("type") == "human"), "")
@@ -116,16 +165,22 @@ def check_change(client: Client, tool_run, root) -> dict[str, tuple[int | None, 
         scores["watch_read_cart_first"] = (None, "")
         scores["watch_kept_items"] = (None, "")
     else:
-        scores["watch_read_cart_first"] = (int(bool(reads)), f"{tool}: {len(reads)} cart reads before it")
+        scores["watch_read_cart_first"] = (int(bool(reads)), f"{tool}: read the cart {read_when}" if reads else f"{tool}: no cart read")
         before = cart_items(reads[-1]) if reads else None
-        if before is None or WANTS_REMOVAL.search(user_said):
+        # Swiggy's cart data doesn't say which restaurant it's from, so a switch counts when Cravio announced it.
+        if announced:  # "this will replace the noodles in your cart": the old items go on purpose
+            scores["watch_kept_items"] = (None, f"{tool}: cart replaced, as Cravio told you before")
+        elif before is None or WANTS_REMOVAL.search(user_said):
             scores["watch_kept_items"] = (None, "no cart read, or the user asked to remove something")
         else:
             missing = sorted(set(before) - set(sent))
             scores["watch_kept_items"] = (int(not missing), f"{tool}: dropped {missing}" if missing else f"{tool}: kept all")
 
     after = None if result.get("status") == "error" else cart_items(result)
-    if result.get("status") == "error":
+    if result.get("status") == "error" and STORE_CLOSED.search(_text(result.get("content"))):
+        # Not a cart going wrong: the place wasn't taking orders (availability.py now stops this earlier).
+        scores["watch_cart_matches"] = (None, f"{tool}: not taking orders: {_text(result.get('content'))[:120]}")
+    elif result.get("status") == "error":
         scores["watch_cart_matches"] = (0, f"{tool} failed: {_text(result.get('content'))[:150]}")
     elif after is None:
         scores["watch_cart_matches"] = (None, f"{tool}: couldn't read Swiggy's reply")
@@ -138,6 +193,56 @@ def check_change(client: Client, tool_run, root) -> dict[str, tuple[int | None, 
     return scores
 
 
+def check_stuck(change, later_reads: list, next_change_at) -> tuple[int | None, str]:
+    """Did the change stick? Compare the cart it left with the last read before the next change."""
+    result = (change.outputs or {}).get("output") or {}
+    if result.get("status") == "error":
+        return None, ""
+    left = {} if change.name == "flush_food_cart" else cart_items(result)
+    readable = [(r, items) for r in later_reads
+                if ((r.outputs or {}).get("output") or {}).get("status") != "error"
+                and (items := cart_items((r.outputs or {}).get("output") or {})) is not None]
+    if left is None or not readable:
+        return None, "no later cart read yet"
+    read, seen = readable[-1]
+    if next_change_at is None and read.start_time - change.start_time < SETTLED:
+        return None, "too soon to tell"  # wait for a later read: old carts come back after a few minutes
+    if seen == left:
+        return 1, f"{change.name}: still {left or 'empty'} when read at {read.start_time:%H:%M}"
+    return 0, (f"{change.name} left {left or 'an empty cart'}, but at {read.start_time:%H:%M} the cart was "
+               f"{seen or 'empty'}: Swiggy brought back an older cart (or it was changed in the Swiggy app)")
+
+
+def watch_stuck(client: Client, since, changes: list, dry_run: bool) -> tuple[int, int]:
+    """Score watch_change_stuck for every change where it's known by now. Returns (scored, failed)."""
+    reads = _patiently(lambda: list(client.list_runs(project_name=PROJECT, run_type="tool", start_time=since,
+                                                     filter='in(name, ["get_food_cart", "get_cart"])')))
+    ordered = sorted(changes, key=lambda r: r.start_time)
+    by_turn: dict = {}
+    for i, change in enumerate(ordered):
+        store = STORE[change.name]
+        next_at = next((c.start_time for c in ordered[i + 1:] if STORE[c.name] == store), None)
+        later = sorted((r for r in reads if STORE[r.name] == store and r.start_time > change.start_time
+                        and (next_at is None or r.start_time < next_at)), key=lambda r: r.start_time)
+        score, comment = check_stuck(change, later, next_at)
+        if score is not None:
+            by_turn.setdefault(change.trace_id, []).append((score, comment, change))
+    scored = failed = 0
+    for trace_id, results in by_turn.items():
+        if _patiently(lambda: list(client.list_feedback(run_ids=[trace_id], feedback_key=["watch_change_stuck"]))):
+            continue  # already judged
+        score, comment = min(s for s, _, _ in results), " | ".join(c for _, c, _ in results)[:1000]
+        when = min(c.start_time for _, _, c in results)
+        print(f"{when:%m-%d %H:%M}  {', '.join(c.name for _, _, c in results)}  watch_change_stuck = {score}  ({comment})")
+        scored, failed = scored + 1, failed + (not score)
+        if not dry_run:
+            _patiently(lambda: client.create_feedback(trace_id, "watch_change_stuck", score=score, comment=comment,
+                                                      source_info={"watcher": "evals/watch_carts.py"}))
+            if not score:
+                _patiently(lambda: client.add_runs_to_annotation_queue(_queue(client).id, run_ids=[trace_id]))
+    return scored, failed
+
+
 def _queue(client: Client):
     for queue in client.list_annotation_queues(name=QUEUE):
         return queue
@@ -147,16 +252,18 @@ def _queue(client: Client):
 def watch_once(client: Client, hours: float, dry_run: bool = False) -> None:
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     names = ", ".join(f'"{n}"' for n in CHANGES)
-    changes = list(client.list_runs(project_name=PROJECT, run_type="tool", filter=f"in(name, [{names}])", start_time=since))
+    changes = _patiently(lambda: list(client.list_runs(project_name=PROJECT, run_type="tool",
+                                                       filter=f"in(name, [{names}])", start_time=since)))
     by_turn: dict = {}
     for run in changes:
         by_turn.setdefault(run.trace_id, []).append(run)
 
     new = failed = 0
     for trace_id, runs in by_turn.items():
-        if not dry_run and list(client.list_feedback(run_ids=[trace_id], feedback_key=["watch_cart_matches"])):
+        scored_before = _patiently(lambda: list(client.list_feedback(run_ids=[trace_id], feedback_key=["watch_approved"])))
+        if scored_before:
             continue  # scored on an earlier pass
-        root = client.read_run(trace_id)
+        root = _patiently(lambda: client.read_run(trace_id))
         combined: dict[str, list[tuple[int | None, str]]] = {}
         for run in sorted(runs, key=lambda r: r.start_time):
             for key, value in check_change(client, run, root).items():
@@ -170,7 +277,8 @@ def watch_once(client: Client, hours: float, dry_run: bool = False) -> None:
                 if dry_run:
                     print(f"      {key} = {score}  ({comment})")
                 else:
-                    client.create_feedback(trace_id, key, score=score, comment=comment, source_info={"watcher": "evals/watch_carts.py"})
+                    _patiently(lambda: client.create_feedback(trace_id, key, score=score, comment=comment,
+                                                              source_info={"watcher": "evals/watch_carts.py"}))
                 if not score:
                     failures.append(key)
         new += 1
@@ -179,8 +287,10 @@ def watch_once(client: Client, hours: float, dry_run: bool = False) -> None:
         if failures:
             failed += 1
             if not dry_run:
-                client.add_runs_to_annotation_queue(_queue(client).id, run_ids=[trace_id])
+                _patiently(lambda: client.add_runs_to_annotation_queue(_queue(client).id, run_ids=[trace_id]))
     print(f"{len(changes)} cart changes in the last {hours:g}h; {new} turns newly scored, {failed} sent to {QUEUE}")
+    stuck, undone = watch_stuck(client, since, changes, dry_run)
+    print(f"did the change stick: {stuck} changes judged now, {undone} undone afterwards")
 
 
 def main() -> None:

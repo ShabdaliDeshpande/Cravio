@@ -11,7 +11,6 @@ If you quit halfway (Ctrl+C), the next `uv run cravio` shows what was done and o
 
 import asyncio
 import difflib
-import json
 import logging
 import os
 import re
@@ -28,8 +27,9 @@ load_dotenv()
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: E402
 from langgraph.types import Command  # noqa: E402
 
-from cravio import trace  # noqa: E402
+from cravio import approvals, trace  # noqa: E402
 from cravio.agent import MODEL, build_agent  # noqa: E402
+from cravio.catalog import cravio_note, describe  # noqa: E402
 from cravio.langsmith_tracing import langsmith_tracing  # noqa: E402
 from cravio.progress import Progress, Step, label_of, steps_in_last_turn  # noqa: E402
 from cravio.swiggy.client import build_client, swiggy_tools  # noqa: E402
@@ -98,14 +98,14 @@ def _thread_id(new: bool) -> str:
 
 async def show_action(action: dict, cart_tool) -> None:
     name, args = action["name"], action["args"]
-    print(f"\n⏸  Cravio wants to run {name}")
+    print("\n⏸  Approve this change?")
     if name == "request_checkout" and cart_tool:
         # Show the cart as Swiggy has it, not as the model describes it.
         log.info("HITL   the CLI reads the cart from Swiggy itself, without the model")
         cart = await cart_tool.ainvoke({"addressId": args["address_id"]})
         print(_text(cart)[:3000])
     else:
-        print(json.dumps(args, indent=2, ensure_ascii=False))
+        print(describe(name, args))
 
 
 def same_request(a: str, b: str) -> bool:
@@ -132,8 +132,14 @@ def resume_with(pending, decisions: list[dict]) -> Command:
     """Hand each paused agent its share of the decisions, in the order its actions were shown."""
     answers, i = {}, 0
     for intr in pending:
-        n = len(intr.value["action_requests"])
+        actions = intr.value["action_requests"]
+        n = len(actions)
         answers[intr.id] = {"decisions": decisions[i : i + n]}
+        for action, decision in zip(actions, decisions[i : i + n]):
+            if decision["type"] == "approve":  # only exactly this change may now run (approvals.py)
+                approvals.remember(action["name"], action["args"])
+            else:
+                approvals.forget(action["name"])
         i += n
     return Command(resume=answers[pending[0].id] if len(pending) == 1 else answers)
 
@@ -168,6 +174,8 @@ async def chat(message: str | None, new: bool, tracing: bool, status_only: bool 
                     print(f"\ncravio> {result['messages'][-1].text}\n")
                     return
                 log.info("HITL   paused before %s; it runs only if you approve", ", ".join(a["name"] for a in actions))
+                if note := cravio_note(result["messages"]):
+                    print(f"\ncravio> {note}")
                 for action in actions:
                     await show_action(action, cart_tool)
                 answer = await _ask("Approve? [y/N] ") if interactive else None

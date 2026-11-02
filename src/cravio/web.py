@@ -7,7 +7,7 @@ Decline buttons. Each browser tab is its own conversation, kept until the tab cl
 """
 
 import asyncio
-import json
+import time
 import uuid
 from pathlib import Path
 
@@ -20,9 +20,10 @@ from langchain.agents.middleware.internal_call_transformer import INTERNAL_CALL_
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 
 from cravio.agent import MODEL, build_agent  # noqa: E402
+from cravio.catalog import cravio_note, describe  # noqa: E402
 from cravio.cli import decide, resume_with  # noqa: E402
 from cravio.langsmith_tracing import langsmith_tracing  # noqa: E402
-from cravio.progress import Progress, Step, label_of  # noqa: E402
+from cravio.progress import Progress, Step  # noqa: E402
 from cravio.swiggy.client import build_client, swiggy_tools  # noqa: E402
 
 ENDED = {"completed": "✔ done", "error": "✖ failed", "declined": "⊘ you said no", "waiting": "⏸ waiting for your approval"}
@@ -36,10 +37,11 @@ class StepView:
     def __init__(self) -> None:
         self.shown: dict[int, cl.Step] = {}
         self.subagent_at: dict[int, cl.Step] = {}  # depth -> the subagent step whose inner steps go under it
+        self.turn: cl.Step | None = None  # this question's "Working on it…" box: Cravio's own steps go inside
 
     async def __call__(self, step: Step) -> None:
         if step.id not in self.shown:
-            parent = self.subagent_at.get(step.depth - 1) if step.depth else None
+            parent = self.subagent_at.get(step.depth - 1) if step.depth else self.turn
             view = cl.Step(name="Plan" if step.tool == "write_todos" else step.label, type="tool",
                            parent_id=parent.id if parent else None, auto_collapse=True)  # folds away when done
             self.shown[step.id] = view
@@ -67,13 +69,18 @@ async def _hold_swiggy(ready: asyncio.Future, close: asyncio.Event) -> None:
 
 @cl.on_chat_start
 async def start() -> None:
+    # Say hello at once, and connect to Swiggy meanwhile: the first message waits for it only if it's still going.
+    await cl.Message(content=f"Hi, I'm Cravio ! . Ask for food, groceries, or help with an order.").send()
     ready, close = asyncio.get_running_loop().create_future(), asyncio.Event()
     holder = asyncio.create_task(_hold_swiggy(ready, close))
-    tools = await ready
-    agent = build_agent(tools, middleware=[Progress(StepView())], checkpointer=InMemorySaver())
+    view = StepView()
+
+    async def build():
+        return build_agent(await ready, middleware=[Progress(view)], checkpointer=InMemorySaver())
+
     config = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": 80}
-    cl.user_session.set("cravio", {"agent": agent, "config": config, "close": close, "holder": holder})
-    await cl.Message(content=f"Hi, I'm Cravio ! . Ask for food, groceries, or help with an order.").send()
+    cl.user_session.set("cravio", {"agent": asyncio.create_task(build()), "view": view, "config": config,
+                                   "close": close, "holder": holder})
 
 
 @cl.on_chat_end
@@ -83,11 +90,10 @@ async def end() -> None:
         await session["holder"]
 
 
-async def _ask_approval(actions: list[dict]) -> dict:
-    lines = [f"**{label_of(a['name'], a['args'])}**\n```json\n{json.dumps(a['args'], ensure_ascii=False, indent=1)[:1500]}\n```"
-             for a in actions]
+async def _ask_approval(actions: list[dict], note: str) -> dict:
+    changes = "\n\n".join(describe(a["name"], a["args"]) for a in actions)
     answer = await cl.AskActionMessage(
-        content="Cravio wants to:\n\n" + "\n\n".join(lines),
+        content=(f"{note}\n\n" if note else "") + f"**Approve this change?**\n\n{changes}",
         actions=[cl.Action(name="approve", payload={"answer": "yes"}, label="Approve"),
                  cl.Action(name="decline", payload={"answer": "no"}, label="Decline")],
         timeout=600,
@@ -110,10 +116,14 @@ def _is_answer_text(chunk, meta: dict) -> bool:
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     session = cl.user_session.get("cravio")
-    agent, config = session["agent"], session["config"]
+    view, config = session["view"], session["config"]
     payload = {"messages": [{"role": "user", "content": message.content}]}
     with langsmith_tracing():  # traced and masked, as in the CLI, when CRAVIO_LANGSMITH=true
         while True:
+            # Show at once that Cravio is on it; its steps fill in underneath, and the box folds away when done.
+            view.turn, started, first_step = cl.Step(name="Working on it…", type="run", auto_collapse=True), time.monotonic(), len(view.shown)
+            await view.turn.send()
+            agent = await session["agent"]  # ready long before, unless you typed the moment the page opened
             reply = cl.Message(content="")
             starts: dict[str, int] = {}  # model call -> where its text starts in the reply
             steps_only: set[str] = set()  # model calls that turned out to call tools: their text isn't the answer
@@ -130,12 +140,18 @@ async def on_message(message: cl.Message) -> None:
                     starts.setdefault(chunk.id, len(reply.content))
                     await reply.stream_token(chunk.content)
             state = await agent.aget_state(config)
+            steps = len(view.shown) - first_step
+            view.turn.name = ("Waiting for your approval" if state.interrupts
+                              else f"Done in {time.monotonic() - started:.0f}s · {steps} step{'s' if steps != 1 else ''}")
+            await view.turn.update()
             if not state.interrupts:  # show exactly Cravio's final answer, whatever streamed on the way
                 reply.content = state.values["messages"][-1].text
-            if reply.content:
+            if reply.content and not state.interrupts:  # when it pauses, its note goes in the approval box instead
                 await reply.send()
+            elif state.interrupts and starts:  # a bubble started streaming, then emptied: don't leave it behind
+                await reply.remove()
             if not state.interrupts:
                 return
             actions = [a for intr in state.interrupts for a in intr.value["action_requests"]]
-            decision = await _ask_approval(actions)
+            decision = await _ask_approval(actions, cravio_note(state.values.get("messages", [])))
             payload = resume_with(state.interrupts, [decision] * len(actions))

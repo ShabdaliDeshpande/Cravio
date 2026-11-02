@@ -18,8 +18,10 @@ from langsmith.anonymizer import DEFAULT_SECRET_RULES
 _SAVED_ADDRESS = re.compile(r"^(\s*\d+\.\s+\[[^\]\n]*\]) [^\n]*?(?= \(ID: )", re.M)
 # Instamart's cart replies carry the delivery address as data (name, flat, area, city, phone, coordinates),
 # and repeat it as JSON inside the reply text. Hide those fields whole.
-_ADDRESS_FIELDS = {"selectedAddressDetails", "selectedAddress", "deliveryAddress", "addressDetails"}
-_ADDRESS_JSON = re.compile(r'"(selectedAddressDetails|selectedAddress|deliveryAddress|addressDetails)"\s*:\s*(\{[^{}]*\}|"[^"]*")')
+# Food's cart data has one too: restaurant.deliverySubtitle = "10-15 mins to <name>: <full address>".
+_ADDRESS_FIELDS = {"selectedAddressDetails", "selectedAddress", "deliveryAddress", "addressDetails", "deliverySubtitle"}
+_ADDRESS_JSON = re.compile(
+    r'"(selectedAddressDetails|selectedAddress|deliveryAddress|addressDetails|deliverySubtitle)"\s*:\s*(\{[^{}]*\}|"[^"]*")')
 # What the model writes from it: "**Delivery Address:** 12, Lake View, Kondapur, Hyderabad ..."
 _DELIVERY_LINE = re.compile(r"(delivery address\W*)[^\n]+", re.I)
 # An address ID points at one address on your account.
