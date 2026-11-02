@@ -8,6 +8,7 @@ what was done, and what was left unfinished, when you come back after quitting h
 
 import inspect
 import itertools
+import json
 import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -73,6 +74,20 @@ class Step:
     seconds: float = 0.0
 
 
+def plan_of(args: dict) -> list[dict]:
+    """write_todos' list as [{"content", "status"}]. A local model sometimes sends plain strings, or the whole
+    list as one JSON string; show those too instead of crashing the step display."""
+    todos = args.get("todos") or []
+    if isinstance(todos, str):
+        try:
+            todos = json.loads(todos)
+        except ValueError:
+            todos = [todos]
+    if not isinstance(todos, list):
+        return []
+    return [t if isinstance(t, dict) else {"content": str(t), "status": "pending"} for t in todos]
+
+
 def label_of(tool: str, args: dict) -> str:
     if tool == "task":
         subagent = args.get("subagent_type", "?")
@@ -109,7 +124,7 @@ class Progress(AgentMiddleware):
             return await handler(request)
         step = Step(next(self._ids), _AGENT.get(), call["name"], label_of(call["name"], call["args"]), _DEPTH.get())
         if call["name"] == "write_todos":
-            step.plan = list(call["args"].get("todos", []))
+            step.plan = plan_of(call["args"])
         await self._report(step)
 
         tokens = None
@@ -149,7 +164,7 @@ def steps_in_last_turn(messages: list) -> list[Step]:
                 continue
             step = Step(len(steps) + 1, "cravio", call["name"], label_of(call["name"], call["args"]), 0)
             if call["name"] == "write_todos":
-                step.plan = list(call["args"].get("todos", []))
+                step.plan = plan_of(call["args"])
             result = results.get(call["id"])
             step.status, step.detail = _status_of(result) if result else ("unfinished", "")
             steps.append(step)
