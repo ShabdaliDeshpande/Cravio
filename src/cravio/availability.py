@@ -4,12 +4,15 @@
    its start, and its model may then propose something slightly different from what the user saw.
 1. Only while the restaurant or store is taking orders. Swiggy can put items in a cart even when the
    restaurant is closed, and Instamart's store can stop taking orders (at night, say) while search still works.
-2. Never delete what's in the Food cart by accident. update_food_cart replaces the whole cart, and the user
-   may have changed it in the Swiggy app since Cravio last looked, so the live cart is read right before.
+2. Never delete what's in the cart by accident (Food and Instamart). update_food_cart and update_cart replace
+   the whole cart, and the user may have changed it in the Swiggy app since Cravio last looked, so the live cart
+   is read right before.
+3. One cart change at a time. Two running together would each read the cart before the other changed it.
 The prompts ask the agents to check first, so the user hears it early; this is the guarantee. Each check is
 one quick Swiggy call and no model call.
 """
 
+import asyncio
 import re
 
 from langchain.agents.middleware import AgentMiddleware
@@ -39,6 +42,15 @@ def _food_items(result: ToolMessage) -> dict[str, int] | None:
     return {str(i.get("menu_item_id")): int(i.get("quantity", 0)) for i in cart.get("items") or []}
 
 
+def _deletes(dropped: list[str], messages: list, read_tool: str) -> str | None:
+    """Stop a change that would delete cart items, unless the user's request asked to remove something."""
+    asked = next((m.text for m in reversed(messages) if getattr(m, "type", "") == "human"), "")
+    if not dropped or WANTS_REMOVAL.search(asked):
+        return None
+    return (f"the cart right now also has {', '.join(dropped)}, and this change would delete it. Read the cart "
+            f"with {read_tool} and send every item to keep, or ask the user.")
+
+
 class TakingOrders(AgentMiddleware):
     """Checks with Swiggy just before update_food_cart (is the restaurant OPEN?) and Instamart's update_cart
     (is the store taking orders?), and stops the change if not."""
@@ -48,8 +60,17 @@ class TakingOrders(AgentMiddleware):
         self.names: dict[str, str] = {}  # restaurant ID -> name, learned from Swiggy's search results
         self.item_place: dict[str, str] = {}  # menu item ID -> restaurant ID, from searches and cart changes
         self.confirmed: dict[str, int] | None = None  # the Food cart Swiggy confirmed after Cravio's last change
+        self._cart_lock = asyncio.Lock()
 
     async def awrap_tool_call(self, request, handler):
+        if request.tool_call["name"] in ("update_food_cart", "update_cart"):
+            # Both replace the whole cart. Two at once (e.g. two subagent tasks) would each check the cart before
+            # the other changed it, and the second would delete the first one's items. So one at a time.
+            async with self._cart_lock:
+                return await self._checked(request, handler)
+        return await self._checked(request, handler)
+
+    async def _checked(self, request, handler):
         call = request.tool_call
         metadata = (request.tool.metadata or {}) if request.tool else {}
         server = metadata.get("swiggy_server")
@@ -62,7 +83,7 @@ class TakingOrders(AgentMiddleware):
             problem = await self._restaurant_problem(call["args"]) or await self._would_delete(
                 call["args"], (request.state or {}).get("messages", []))
         elif call["name"] == "update_cart" and server == "im":
-            problem = await self._store_problem()
+            problem = await self._store_problem(call["args"], (request.state or {}).get("messages", []))
         if problem:
             return ToolMessage(
                 content=f"Not done: {problem} Nothing was changed. Tell the user, and offer another option.",
@@ -71,6 +92,7 @@ class TakingOrders(AgentMiddleware):
         result = await handler(request)
         self._learn(call, result)
         catalog.learn(call["name"], result)  # item names, so approvals can say "2 × Mixed Sprouts"
+        catalog.shorten(call["name"], server, call["args"], result)  # Instamart search: ~10k tokens down to ~1k
         self._notice_restored_cart(call, result)
         return result
 
@@ -129,20 +151,23 @@ class TakingOrders(AgentMiddleware):
         same_place = bool(in_cart & keeping) or any(self.item_place.get(i) == target for i in in_cart)
         if not items or not same_place:
             return None  # empty cart, or another restaurant: replaced on purpose, after Cravio's warning
-        asked = next((m.text for m in reversed(messages) if getattr(m, "type", "") == "human"), "")
-        if WANTS_REMOVAL.search(asked):
-            return None
         dropped = [f"{i.get('name')} x{i.get('quantity')}" for i in items if str(i.get("menu_item_id")) not in keeping]
-        if dropped:
-            return (f"the cart right now also has {', '.join(dropped)}, and this change would delete it. Read the cart "
-                    "with get_food_cart and send every item to keep, or ask the user.")
-        return None
+        return _deletes(dropped, messages, "get_food_cart")
 
-    async def _store_problem(self) -> str | None:
+    async def _store_problem(self, args: dict, messages: list) -> str | None:
+        """Is Instamart taking orders? And, as with the Food cart, would this change delete items by accident?"""
         cart = await self._ask("im", "get_cart", {})
-        if cart and cart.status == "error" and STORE_CLOSED.search(_text(cart.content)):
-            return "Instamart isn't taking orders at this address right now (Swiggy says the store is unavailable)."
-        return None
+        if cart is None:
+            return None
+        if cart.status == "error":
+            if STORE_CLOSED.search(_text(cart.content)):
+                return "Instamart isn't taking orders at this address right now (Swiggy says the store is unavailable)."
+            return None
+        structured = (cart.artifact or {}).get("structured_content") or {} if isinstance(cart.artifact, dict) else {}
+        keeping = {str(i.get("spinId")) for i in args.get("items", [])}
+        dropped = [f"{i.get('itemName')} x{i.get('quantity')}" for i in structured.get("items") or []
+                   if str(i.get("spinId")) not in keeping]
+        return _deletes(dropped, messages, "get_cart")
 
     def _learn(self, call: dict, result) -> None:
         """Remember restaurant names, and which restaurant each menu item belongs to."""

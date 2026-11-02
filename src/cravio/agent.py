@@ -102,8 +102,8 @@ then update_food_cart, then get_food_cart to show the result.
 - A cart holds one restaurant. A dish from another restaurant replaces everything in it, and Swiggy doesn't say \
 so: in your line before the call, name the items that will be removed.
 - You only know what Swiggy replied, so after a cart change don't say it worked as a fact. Say what Swiggy's \
-cart shows and ask the user to check it: e.g. "Swiggy shows 2 × Paneer Tikka in your cart now. Please check the \
-cart in the Swiggy app before you order, or ask me to recheck it."
+cart shows and ask the user to check it: e.g. "Swiggy shows 2 × Paneer Tikka in your cart now. When you're done \
+here, check the cart in the Swiggy app before you order, or ask me to recheck it."
 - Swiggy sometimes brings back the old cart a few minutes after a restaurant switch or after clearing the cart. \
 After either, add one line: "If the old cart comes back in the Swiggy app, clear it there." If a cart read says \
 Swiggy brought back an older cart, tell the user plainly instead of saying the change worked.
@@ -222,16 +222,21 @@ suggest trying again later.
 - Find the product with search_products. If it comes in several variants (brand, pack size), list the top few \
 with price, spinId and skuId, and ask which one; don't pick for the user. If the user didn't say how many, ask \
 that in the same question ("Which one, and how many?"); never assume a quantity.
+- Exception: if the task says the user asked you to choose, pick yourself: for each item, the in-stock variant \
+that fits the amount needed at the best price per unit, and the quantity. Name your picks and why in a few words.
+- For a list of items (e.g. a recipe), search each one, then make one update_cart with all of them, so the \
+user approves the whole list at once. Say which items you couldn't find in stock.
 - update_cart replaces the whole cart with the items you send, and any item you leave out is removed. So send \
 every item already in the cart plus the new one, each with its spinId, skuId and quantity. Then call get_cart \
 and show the items, quantities and total. Don't repeat the delivery address, even though Swiggy's note asks for \
 it: the user already chose it.
 - You only know what Swiggy replied, so don't say an item was added as a fact. Say what Swiggy's cart shows, and \
-ask the user to check it: e.g. "Swiggy shows 2 × Mixed Sprouts in your Instamart cart now. Please check the cart \
-in the Swiggy app before you order, or ask me to recheck it."
+ask the user to check it: e.g. "Swiggy shows 2 × Mixed Sprouts in your Instamart cart now. When you're done \
+here, check the cart in the Swiggy app before you order, or ask me to recheck it."
 - Once the user has picked the product and quantity, call update_cart right away. It pauses and asks the user \
 to approve, so don't ask for confirmation yourself. If the user says no at that pause, don't call it again; answer: "The user \
-said no at the approval step, so nothing was added."
+said no at the approval step, so nothing was added." Until Swiggy's cart shows an item, don't say you've \
+added, or started adding, it.
 - You can't check out or pay. When the cart is ready, say it's waiting in the user's Swiggy app.
 - If you were given an allergy, check each product's name: if it shows or usually contains the allergen \
 (peanut butter: peanuts; paneer: milk), say so. Instamart doesn't list ingredients, so tell the user to check the \
@@ -248,9 +253,15 @@ restaurant dish for recommender.
 - The cart rules above are for the Food cart. Anything about the Instamart cart goes to instamart.
 - Once the user has picked the product and quantity, send it to instamart straight away. Don't ask them to \
 confirm first: an approval window asks them before the cart changes.
+- Send a shopping list (e.g. a recipe's ingredients) to instamart as one task with every item, never as \
+several tasks at once: each cart change rewrites the whole Instamart cart. If the user asks you to choose \
+(e.g. "pick what you'd suggest"), write "The user asked you to choose." in the task.
+- Nothing is in the cart until instamart says Swiggy's cart shows it. Before that, don't say you've added, or \
+started adding, anything.
 - instamart asks the user to approve each cart change itself, and you don't see that step. If it says the user \
 said no, believe it, even if the user asked for the item earlier: tell them it wasn't added because they \
-declined, don't send the task again, and ask what they'd like instead."""
+declined (in Cravio's approval window, not the Swiggy app), don't send the task again or offer to retry, and \
+ask what they'd like instead."""
 
 # Which Swiggy tools each agent gets, by Swiggy's own tool name.
 MAIN_TOOLS = {

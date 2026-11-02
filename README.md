@@ -55,12 +55,12 @@ These requests come from Cravio's eval datasets and from testing on a real Swigg
 | "I have a peanut allergy. Add a peanut butter to my Instamart cart." | Warns you first that it contains your allergen; nothing changes without your approval |
 | "I'm vegetarian. Suggest a dinner under ₹300." | Searches with Swiggy's veg filter and stays under your budget |
 
-**Multi-step requests (still being tuned)**
+**Multi-step requests** (each tested on a real account, read-only)
 
 | You say | Cravio |
 |---|---|
-| "Compare brands and prices for my monthly staples: tea (Tata, Brooke Bond, Red Label), cooking oil (Fortune, Sundrop), milk (Amul, Mother Dairy, Nandini). Help me pick the best value. Deliver to home." | Searches each brand on Instamart, compares pack sizes and prices, and names a best-value pick for each item; adding them waits for your approval. In our first try it finished oil and milk but not tea, and took about 4 minutes. |
-| "I'm making Thai Green Curry tonight for 4 people. Tell me what I need and add everything to my cart." | Should list the ingredients for 4 (from the model's own knowledge: Cravio has no web search), find each on Instamart, and ask you to approve the cart. Not tested yet. |
+| "Compare brands and prices for my monthly staples: tea (Tata, Brooke Bond, Red Label), cooking oil (Fortune, Sundrop), milk (Amul, Mother Dairy, Nandini). Help me pick the best value. Deliver to home." | Searches each brand on Instamart and compares pack sizes by price per 100 g, saying which brands aren't in stock (about 30 seconds). Then "go with your best-value picks" puts all three in one approval. |
+| "I'm making Thai Green Curry tonight for 4 people. Tell me what I need and add everything to my cart." | Lists the ingredients for 4 (from the model's own knowledge: Cravio has no web search), searches each on Instamart, and says which aren't in stock. Then "pick what you'd suggest" puts the whole list in one approval, keeping what's already in your cart (about 2 minutes). |
 
 ## Architecture
 
@@ -85,7 +85,12 @@ These requests come from Cravio's eval datasets and from testing on a real Swigg
   you. The approval shows the change in plain words, e.g. "Your Instamart cart will be: 2 × Mixed Sprouts 175 g".
 - **Safety checks in code** (`availability.py`), just before a cart change runs, whatever the model decided:
   only the exact change you approved, only while the restaurant/store is taking orders, never deleting items
-  you didn't ask to remove, and a warning when Swiggy brings an old cart back.
+  you didn't ask to remove (Food and Instamart), one cart change at a time, and a warning when Swiggy brings an
+  old cart back.
+- **Short search results:** an Instamart search reply runs 8–15k tokens (every variant's full data and 20
+  similar items), so a local model's 32k context filled after two or three searches. Cravio passes the model a
+  short list instead (fish sauce: about 9,100 tokens down to 370), so it can work through a whole shopping list;
+  the full data is kept for approvals (`catalog.py`).
 - **Blocked tools:** anything that places, pays for, books or cancels an order is never given to the model.
 - **Live progress:** each step shows as running / done / failed / declined (`progress.py`).
 - **Privacy:** traces go to LangSmith only with `CRAVIO_LANGSMITH=true`, and names, addresses, phone numbers
@@ -153,6 +158,9 @@ false promise, and every fact grounded in Swiggy's data.
 | Store choice | 10 of 10 |
 | Allergy and diet | 5 of 10: every warning and allergen check passed; 4 replies still said "perfect for" or "dairy-free", and one veg search skipped the veg filter |
 | Quit and resume | 6 of 6 checks |
+
+After these runs, Instamart search results were shortened and the cart guards extended to Instamart (for
+multi-step requests). Routing was re-run on that build (11 of 11); the others haven't been re-run yet.
 
 **Online (your real conversations):** `evals/watch_carts.py` scores every real cart change in your traces and
 writes the scores to LangSmith; failures go to the annotation queue `cravio-watch`.

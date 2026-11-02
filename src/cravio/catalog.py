@@ -27,6 +27,51 @@ def _text(content) -> str:
     return content if isinstance(content, str) else "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict))
 
 
+def _products(products: list[dict], limit: int) -> list[str]:
+    """In-stock variants only, with the fields Cravio uses: size, price, veg, stock limit and the cart IDs."""
+    lines: list[str] = []
+    for p in products:
+        variants = [v for v in p.get("variations", []) if v.get("isInStockAndAvailable")]
+        if not variants:
+            continue
+        if sum(line.startswith("- ") for line in lines) == limit:
+            break
+        lines.append(f"- {'⭐ ' if p.get('isPromoted') else ''}{p.get('displayName')} ({p.get('brand')})")
+        for v in variants:
+            price = v.get("price") or {}
+            mrp = (f" (MRP{_price(price['mrp'])[2:]})"
+                   if isinstance(price.get("mrp"), (int, float)) and price["mrp"] != price.get("offerPrice") else "")
+            extras = [price.get("unitLevelPrice"), v.get("vegClassifier") if "INVALID" not in str(v.get("vegClassifier")) else None,
+                      f"max {v['maxQuantity']}" if v.get("maxQuantity") else None]
+            lines.append(f"  - {v.get('quantityDescription')}{_price(price.get('offerPrice'))}{mrp}"
+                         + "".join(f" · {e}" for e in extras if e)
+                         + f" · spinId {v.get('spinId')} · skuId {v.get('skuId')}")
+    return lines
+
+
+def short_search(query: str, data: dict) -> str:
+    """Instamart's search_products reply, cut down from ~10k tokens to ~1k.
+
+    Swiggy sends every variant's full data, 20 similar items and long display notes. A local model's context
+    fills after two or three searches, and then it loses track of a shopping list. The full reply stays in the
+    tool's artifact, so learn() still sees every name."""
+    main, similar = _products(data.get("products", []), 8), _products(data.get("similarProducts", []), 4)
+    if not main and not similar:
+        return f'No in-stock products found for "{query}".'
+    head = (f'In-stock products for "{query}". Products marked ⭐ are sponsored: show the ⭐ and tell the user '
+            '"⭐ = Featured/Sponsored product". update_cart needs both the spinId and the skuId.')
+    return "\n".join([head, *main, *(["Similar items:", *similar] if similar else [])])
+
+
+def shorten(tool: str, server: str | None, args: dict, result) -> None:
+    """Give the model the short version of an Instamart search; the full data stays in the artifact."""
+    if tool != "search_products" or server != "im" or not isinstance(result, ToolMessage) or result.status == "error":
+        return
+    data = _structured(result)
+    if isinstance(data.get("products"), list):
+        result.content = short_search(str(args.get("query", "")), data)
+
+
 def _price(value) -> str:
     return f" · ₹{value:g}" if isinstance(value, (int, float)) else ""
 
