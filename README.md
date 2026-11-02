@@ -186,8 +186,14 @@ docs/friction_log.md   the rough edges hit while building with LangChain and Lan
 
 ## Known limits (Swiggy's side)
 
-- After a restaurant switch or clearing the cart, Swiggy sometimes brings the old cart back a few minutes
-  later. Cravio notices on its next read and tells you; clearing the cart in the Swiggy app fixes it.
+- Cravio is a prototype that runs on your own Swiggy account through Swiggy's MCP servers. Swiggy's
+  [MCP manifest](https://github.com/Swiggy/swiggy-mcp-server-manifest) says third-party app development isn't
+  permitted yet, so offering Cravio to other people would need Swiggy's production access and its brand and
+  data guidelines.
+- After a restaurant switch or clearing the cart, the old cart sometimes came back a few minutes later.
+  Cravio notices on its next read and tells you. Swiggy's manifest warns that using the Swiggy app at the same
+  time as MCP can cause session conflicts; we had the app open while testing, so that may be the cause, and we
+  haven't ruled it out. Close the Swiggy app while you use Cravio.
 - Swiggy lists no ingredients or allergens, so allergy handling can only warn and point to the restaurant or
   pack label.
 - Instamart stops taking orders at night while its search still works; Cravio says so instead of trying.
