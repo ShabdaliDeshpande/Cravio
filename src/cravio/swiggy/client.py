@@ -115,7 +115,6 @@ def build_client(
 ) -> MultiServerMCPClient:
     connections: dict[str, StreamableHttpConnection] = {}
     for name in servers or enabled_servers():
-        print(f"SETUP  Swiggy MCP server {name} at {BASE_URL + SERVERS[name]} (streamable HTTP, OAuth)")
         url = BASE_URL + SERVERS[name]
         print(f"SETUP  Swiggy MCP server {name} at {url} (streamable HTTP, OAuth)")
         log.info("SETUP  Swiggy MCP server %r at %s (streamable HTTP, OAuth)", name, url)
@@ -156,14 +155,13 @@ async def swiggy_tools(client: MultiServerMCPClient) -> AsyncIterator[list[BaseT
 
 async def _main() -> None:
     """Quick check: sign in to Swiggy and show each tool the agent would get: what it does and its inputs."""
-    client = build_client(["im"])
+    client = build_client()
     async with swiggy_tools(client) as tools:
-        for tool in tools[:1]:
+        for tool in tools:
             print("=" * 80)
             print(tool.name, "(asks you first)" if needs_approval(tool.name) else "")
-            #print("DESCRIPTION:", tool.description)
+            print("DESCRIPTION:", tool.description)
             print("INPUT:", json.dumps(tool.args_schema, indent=2))
-            #print("METADATA:", tool.metadata)
 
 
 if __name__ == "__main__":

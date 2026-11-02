@@ -99,6 +99,20 @@ uv run python evals/run_support_evals.py --upload      # 3 runs per example, sco
 uv run python evals/run_intent_evals.py                # here only, no upload
 ```
 
+**MVP metric: correct and safe resolution rate.** A support conversation counts only if every check passes:
+the right ticket on the right order, the order looked up first, the ticket ID and safety advice in the reply, no
+false promise, and every fact grounded in Swiggy's data.
+
+**Results on the final build** (LangSmith experiments, 2 Nov 2026, gemma4:26b, real Swiggy, read-only):
+
+| Eval | Runs passing every check |
+|---|---|
+| Support (the MVP metric) | 12 of 12 |
+| Routing | 11 of 11 |
+| Store choice | 10 of 10 |
+| Allergy and diet | 5 of 10: every warning and allergen check passed; 4 replies still said "perfect for" or "dairy-free", and one veg search skipped the veg filter |
+| Quit and resume | 6 of 6 checks |
+
 **Online (your real conversations):** `evals/watch_carts.py` scores every real cart change in your traces and
 writes the scores to LangSmith; failures go to the annotation queue `cravio-watch`.
 
@@ -126,6 +140,7 @@ src/cravio/
   cli.py, web.py       terminal and web chat
 evals/                 offline evals, the resume test and the online watcher
 docs/swiggy_tools/     Swiggy's tool definitions, as their servers describe them
+docs/friction_log.md   the rough edges hit while building with LangChain and LangSmith
 ```
 
 ## Known limits (Swiggy's side)
