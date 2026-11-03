@@ -16,6 +16,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.sessions import StreamableHttpConnection
 from langchain_mcp_adapters.tools import load_mcp_tools
 from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT, McpHttpClientFactory
+from mcp.types import BlobResourceContents, CallToolResult, EmbeddedResource, ResourceLink, TextContent
 
 from cravio.swiggy.oauth import build_oauth_provider
 
@@ -129,6 +130,22 @@ def build_client(
     return MultiServerMCPClient(connections, tool_name_prefix=False)
 
 
+async def _files_as_text(request, handler):
+    """The local model reads text only. When Swiggy sends back a link or a file, give the model a line of text
+    about it instead: Ollama can't take a file and the whole turn would crash."""
+    result = await handler(request)
+    if not isinstance(result, CallToolResult):
+        return result
+    content = []
+    for block in result.content:
+        if isinstance(block, ResourceLink):
+            block = TextContent(type="text", text=f"[link] {block.name}: {block.uri}")
+        elif isinstance(block, EmbeddedResource) and isinstance(block.resource, BlobResourceContents):
+            block = TextContent(type="text", text=f"[file not shown] {block.resource.uri} ({block.resource.mimeType})")
+        content.append(block)
+    return result.model_copy(update={"content": content})
+
+
 @asynccontextmanager
 async def swiggy_tools(client: MultiServerMCPClient) -> AsyncIterator[list[BaseTool]]:
     """Connect to each server and yield the tools the agent may use.
@@ -141,7 +158,8 @@ async def swiggy_tools(client: MultiServerMCPClient) -> AsyncIterator[list[BaseT
         tools: list[BaseTool] = []
         for server in client.connections:
             session = await stack.enter_async_context(client.session(server))
-            for tool in await load_mcp_tools(session, server_name=server, tool_name_prefix=client.tool_name_prefix):
+            for tool in await load_mcp_tools(session, server_name=server, tool_name_prefix=client.tool_name_prefix,
+                                             tool_interceptors=[_files_as_text]):
                 name = tool.name.removeprefix(f"{server}_") if client.tool_name_prefix else tool.name
                 read_only = bool((tool.metadata or {}).get("readOnlyHint"))
                 if is_blocked(name, read_only):
