@@ -154,7 +154,7 @@ false promise, and every fact grounded in Swiggy's data.
 | Allergy and diet | 5 of 10: every warning and allergen check passed; 4 replies still said "perfect for" or "dairy-free", and one veg search skipped the veg filter |
 | Quit and resume | 6 of 6 checks |
 
-**Online (your real conversations):** `evals/watch_carts.py` scores every real cart change in your traces and
+**Online:** `evals/watch_carts.py` scores every real cart change in your traces and
 writes the scores to LangSmith; failures go to the annotation queue `cravio-watch`.
 
 ```
