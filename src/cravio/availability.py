@@ -1,7 +1,7 @@
 """Checks just before a cart change runs, in code, so the rules hold whatever the model does.
 
-0. Only the exact change the user approved, once (approvals.py). After approval, a subagent is run again from
-   its start, and its model may then propose something slightly different from what the user saw.
+0. Only the exact change the user approved, once (approvals.py). A paused subagent resumes where it stopped, so
+   this should already hold; the check makes sure of it in code.
 1. Only while the restaurant or store is taking orders. Swiggy can put items in a cart even when the
    restaurant is closed, and Instamart's store can stop taking orders (at night, say) while search still works.
 2. Never delete what's in the cart by accident (Food and Instamart). update_food_cart and update_cart replace

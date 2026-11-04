@@ -1,9 +1,9 @@
 """Only the exact change the user approved may run.
 
-When a subagent pauses for approval, the run picks up again after the user's answer by running that subagent
-from its start, and its model can then propose a slightly different change than the one the user saw. So the
-CLI and web chat record what was approved (remember), and the safety middleware lets a change run only if it
-matches an approval (take), once.
+A safety net. After the user answers, a paused subagent resumes where it stopped, so the change that runs is the
+one the user saw (checked 4 Nov 2026 with deepagents 0.7.32 and langgraph 1.2.18). This makes that hold in code
+too, whatever a later library version or the model does: the CLI and web chat record what was approved
+(remember), and the safety middleware lets a change run only if it matches an approval (take), once.
 """
 
 import json

@@ -181,7 +181,7 @@ src/cravio/
   cli.py, web.py       terminal and web chat
 evals/                 offline evals, the resume test and the online watcher
 docs/swiggy_tools/     Swiggy's tool definitions, as their servers describe them
-docs/friction_log.md   the rough edges hit while building with LangChain and LangSmith
+docs/friction_log.md   the rough edges hit with LangSmith: the cart watcher and the LLM judge's temperature
 ```
 
 ## Known limits (Swiggy's side)
